@@ -1,42 +1,17 @@
-# Pong Game Documentation
+# Pong Game
 
-## Features  
-- Classic Pong gameplay.  
-- Single and multiplayer modes available.  
-- Customizable ball and paddle speeds.  
-- Score tracking and display.
+This project is a simple implementation of the classic Pong game, developed using HTML, CSS, and JavaScript. The game allows two players to compete against each other by controlling paddles on the screen to hit a ball back and forth.
 
-## How to Play  
-1. Start the game by launching `main.py`.  
-2. Use the following controls:  
-   - **Player 1:** W (up), S (down)  
-   - **Player 2:** Up Arrow (up), Down Arrow (down)  
-3. The objective is to score against the opponent by getting the ball past their paddle.  
+## Technologies Used
+- HTML: Structure of the game.
+- CSS: Styling of the game elements.
+- JavaScript: Logic and gameplay functionality.
 
-## Project Structure  
-```
-PongGame/
-├── main.py       # Main game loop  
-├── paddle.py     # Paddle class and methods  
-├── ball.py       # Ball class and methods  
-├── game.py       # Game management and mechanics  
-├── settings.py   # Configuration settings (speed, colors, etc.)  
-└── README.md     # Documentation file
-```
+## How to Play
+1. Open `index.html` in a web browser.
+2. Player 1 uses the "W" and "S" keys to control their paddle.
+3. Player 2 uses the "Up Arrow" and "Down Arrow" keys.
+4. The first player to reach 5 points wins the game! 
 
-## Game Mechanics  
-- **Paddles:** Move vertically to intercept the ball. 
-- **Ball:** Bounces off the walls and paddles. 
-- **Scoring:** Points are awarded when the ball passes a paddle.
-
-## Technical Details  
-- Built using Python with Pygame library.  
-- Optimized for performance to run smoothly on low-end devices.
-
-## Customization Guide  
-- Modify `settings.py` to change game speed, paddle size, and colors.  
-- Implement new features by extending classes in `paddle.py` and `ball.py`.  
-- For multiplayer options, adjust the keyboard controls in `main.py`.  
-
-## License  
-This project is licensed under the MIT License.
+## Conclusion
+Feel free to modify the code and customize the game as you like. Enjoy playing!
