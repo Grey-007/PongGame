@@ -3,44 +3,80 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Pong Game - Glassmorphic</title>
+    <title>Pong Minimal</title>
     <link rel="stylesheet" href="styles.css">
 </head>
-<body>
-    <div class="container">
-        <h1>PONG GAME</h1>
-        <div class="scoreboard">
-            <div class="score-box">
-                <span class="score-label">YOU</span>
-                <span class="score-value" id="playerScore">0</span>
+<body data-theme="midnight">
+    <main class="app">
+        <header class="topbar">
+            <div class="brand-block">
+                <p class="eyebrow">Minimal Multiplayer Pong</p>
+                <h1>PONG</h1>
             </div>
-            <div class="divider">VS</div>
-            <div class="score-box">
-                <span class="score-label">CPU</span>
-                <span class="score-value" id="computerScore">0</span>
+            <div class="theme-toolbar">
+                <span class="field-label">Themes</span>
+                <div class="theme-picker" id="themePicker" aria-label="Select theme"></div>
             </div>
-        </div>
-        <div class="status-bar">
-            <div class="status-pill">
-                <span class="status-label">MATCH STATUS</span>
-                <span class="status-value" id="gameStatus">Press Space or click Start Match</span>
+        </header>
+
+        <section class="panel lobby">
+            <div class="mode-switch" aria-label="Game mode">
+                <button class="mode-button is-active" id="cpuModeButton" type="button">1v CPU</button>
+                <button class="mode-button" id="onlineModeButton" type="button">Online 1v1</button>
             </div>
-        </div>
-        <div class="canvas-shell">
-            <canvas id="gameCanvas" width="800" height="400"></canvas>
-            <div class="game-overlay" id="gameOverlay" aria-live="polite">
-                <p class="overlay-kicker" id="overlayKicker">Classic Arcade Rally</p>
-                <h2 class="overlay-title" id="overlayTitle">Press Space to Start</h2>
-                <p class="overlay-message" id="overlayMessage">Play against the computer. First to 5 points wins the match.</p>
-                <button class="overlay-button" id="overlayButton" type="button">Start Match</button>
+
+            <div class="mode-panel" id="cpuPanel">
+                <p class="helper-text">Local match against the computer on the same screen.</p>
+                <button class="primary-button" id="startCpuButton" type="button">Start Local Match</button>
             </div>
-        </div>
-        <div class="controls">
-            <p>Move the left paddle with your mouse, touch, W/S, or Up/Down.</p>
-            <p>Press Space to serve or restart, and P to pause.</p>
-            <p>The right paddle is AI controlled. First to 5 points wins.</p>
-        </div>
-    </div>
+
+            <div class="mode-panel is-hidden" id="onlinePanel">
+                <div class="online-actions">
+                    <button class="primary-button" id="createRoomButton" type="button">Create Room</button>
+                    <div class="join-row">
+                        <input id="roomCodeInput" type="text" maxlength="6" autocomplete="off" placeholder="ROOM" aria-label="Room code">
+                        <button class="secondary-button" id="joinRoomButton" type="button">Join</button>
+                    </div>
+                    <button class="secondary-button" id="copyCodeButton" type="button">Copy Code</button>
+                    <button class="secondary-button" id="leaveRoomButton" type="button">Leave Room</button>
+                </div>
+                <p class="helper-text" id="shareHint">Share this page URL and the room code with your friend.</p>
+                <div class="badge-row">
+                    <span class="badge" id="roomCodeBadge">Room: none</span>
+                    <span class="badge" id="roomRoleBadge">Role: offline</span>
+                </div>
+            </div>
+        </section>
+
+        <section class="hud">
+            <div class="hud-card score-card">
+                <span class="hud-label" id="leftScoreLabel">YOU</span>
+                <span class="hud-value" id="leftScoreValue">0</span>
+            </div>
+            <div class="hud-card status-card">
+                <span class="hud-label">Status</span>
+                <span class="status-value" id="gameStatus">Pick a mode to begin.</span>
+            </div>
+            <div class="hud-card score-card">
+                <span class="hud-label" id="rightScoreLabel">CPU</span>
+                <span class="hud-value" id="rightScoreValue">0</span>
+            </div>
+        </section>
+
+        <section class="board-panel">
+            <div class="canvas-shell">
+                <canvas id="gameCanvas" width="800" height="400"></canvas>
+                <div class="overlay" id="gameOverlay" aria-live="polite">
+                    <p class="overlay-eyebrow" id="overlayEyebrow">1v CPU</p>
+                    <h2 class="overlay-title" id="overlayTitle">Start a Match</h2>
+                    <p class="overlay-message" id="overlayMessage">Play locally against the computer or switch to online mode and share a room code.</p>
+                    <button class="primary-button" id="overlayButton" type="button">Start</button>
+                </div>
+            </div>
+        </section>
+
+        <p class="controls-note" id="controlsNote">Use mouse, touch, W/S, or Up/Down to move your paddle.</p>
+    </main>
 
     <script src="script.js"></script>
 </body>

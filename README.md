@@ -1,24 +1,41 @@
-# Pong Game
+# Pong Minimal
 
-This project is a browser-based Pong game built with HTML, CSS, and JavaScript. You control the left paddle while the right paddle is handled by a computer opponent.
+Minimal Pong with two modes:
 
-## Technologies Used
-- HTML: Structure of the game.
-- CSS: Styling of the game elements.
-- JavaScript: Logic and gameplay functionality.
+- `1v CPU` for local single-player.
+- `Online 1v1` for remote play through a room code.
 
-## How to Play
-1. Open `index.html` in a web browser.
-2. Start the match with the on-screen button or by pressing `Space`.
-3. Move your paddle with the mouse, touch, `W`/`S`, or the Up/Down arrow keys.
-4. Press `P` to pause and resume the match.
-5. The first side to reach 5 points wins. After a match ends, press `Space` or click the button to play again.
+It also includes 6 switchable themes:
 
-## Features
-- Computer-controlled opponent with paddle tracking AI.
-- First-to-5 match flow with restart support.
-- Pause/resume support and serve countdowns.
-- Responsive canvas styling with mouse, keyboard, and touch controls.
+- Midnight
+- Paper
+- Coral
+- Mint
+- Mono
+- Arcade
 
-## Conclusion
-Feel free to modify the code and customize the game as you like. Enjoy playing!
+## Run It
+
+1. Start the app with:
+
+```bash
+npm start
+```
+
+2. Open `http://localhost:3000`.
+3. For online play, both players open the same app URL.
+4. One player creates a room and shares the room code.
+5. The second player joins with that code.
+
+## Notes
+
+- Online play works through the included Node server in [server.js](/home/grey/PongGame/server.js).
+- To play with a friend from somewhere else, the server must be reachable by both players.
+- That usually means deploying it somewhere public, using a tunnel, or port-forwarding your machine.
+
+## Controls
+
+- Mouse or touch
+- `W` / `S`
+- `Up` / `Down`
+- `Space` for the main on-screen action

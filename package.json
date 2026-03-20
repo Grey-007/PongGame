@@ -1,0 +1,9 @@
+{
+    "name": "pong-minimal",
+    "version": "1.0.0",
+    "private": true,
+    "description": "Minimal Pong with local CPU mode and online 1v1 rooms",
+    "scripts": {
+        "start": "node server.js"
+    }
+}
