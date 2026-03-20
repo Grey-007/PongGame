@@ -3,27 +3,30 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Pong Game - Glassmorphic</title>
     <link rel="stylesheet" href="styles.css">
-    <title>Pong Game</title>
-    <style>
-        body {
-            display: flex;
-            justify-content: center;
-            align-items: center;
-            height: 100vh;
-            margin: 0;
-            background: rgba(255, 255, 255, 0.8);
-            backdrop-filter: blur(10px);
-            border-radius: 15px;
-            box-shadow: 0 4px 15px rgba(0, 0, 0, 0.1);
-        }
-        canvas {
-            border: 2px solid #000;
-        }
-    </style>
 </head>
 <body>
-    <canvas id="pongCanvas" width="800" height="400"></canvas>
+    <div class="container">
+        <h1>🎮 PONG GAME</h1>
+        <div class="scoreboard">
+            <div class="score-box">
+                <span class="score-label">PLAYER</span>
+                <span class="score-value" id="playerScore">0</span>
+            </div>
+            <div class="divider">VS</div>
+            <div class="score-box">
+                <span class="score-label">COMPUTER</span>
+                <span class="score-value" id="computerScore">0</span>
+            </div>
+        </div>
+        <canvas id="gameCanvas" width="800" height="400"></canvas>
+        <div class="controls">
+            <p>🖱️ Move Mouse Up/Down OR Use ⬆️⬇️ Arrow Keys to Control Left Paddle</p>
+            <p>Right Paddle is AI Controlled</p>
+        </div>
+    </div>
+
     <script src="script.js"></script>
 </body>
 </html>
