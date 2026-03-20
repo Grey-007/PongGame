@@ -29,6 +29,9 @@ const THEMES = [
     { id: 'arcade', label: 'Arcade', swatch: '#f472b6' }
 ];
 
+const SUPABASE_MODULE_URL = 'https://esm.sh/@supabase/supabase-js@2';
+const ONLINE_BROADCAST_INTERVAL = 1000 / 30;
+
 const canvas = document.getElementById('gameCanvas');
 const ctx = canvas.getContext('2d');
 const themePicker = document.getElementById('themePicker');
@@ -66,12 +69,31 @@ const app = {
     overlayAction: 'start-cpu',
     lastFrameTime: 0,
     palette: {},
-    local: createLocalMatch('menu', 'Start a local match or switch to online 1v1.'),
+    local: createMatchState('menu', 'Start a local match or switch to online 1v1.'),
     online: createOnlineState()
 };
 
 function clamp(value, min, max) {
     return Math.max(min, Math.min(value, max));
+}
+
+function generateId() {
+    if (crypto.randomUUID) {
+        return crypto.randomUUID();
+    }
+
+    return `player-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+function generateRoomCode() {
+    const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+    let code = '';
+
+    for (let index = 0; index < 6; index += 1) {
+        code += alphabet[Math.floor(Math.random() * alphabet.length)];
+    }
+
+    return code;
 }
 
 function makeBall() {
@@ -91,7 +113,14 @@ function makePaddles() {
     };
 }
 
-function createLocalMatch(status, message) {
+function makePlayers(leftConnected = false, rightConnected = false) {
+    return {
+        left: { connected: leftConnected },
+        right: { connected: rightConnected }
+    };
+}
+
+function createMatchState(status, message, leftConnected = false, rightConnected = false) {
     return {
         status,
         message,
@@ -100,38 +129,33 @@ function createLocalMatch(status, message) {
         paddles: makePaddles(),
         ball: makeBall(),
         serveDirection: 1,
-        serveReadyAt: 0
+        serveReadyAt: 0,
+        players: makePlayers(leftConnected, rightConnected)
     };
 }
 
 function createOnlineState() {
     return {
+        configured: false,
+        configChecked: false,
+        configError: '',
+        client: null,
+        channel: null,
         connected: false,
         busy: false,
         roomCode: '',
         playerId: '',
         side: null,
-        eventSource: null,
-        snapshot: null,
+        isHost: false,
+        snapshot: createMatchState('idle', 'Online mode is loading.'),
+        authoritative: null,
         message: 'Create a room or join one with a code.',
         inputY: centerPaddleY,
-        lastSentY: null,
-        lastSentAt: 0,
-        sending: false
-    };
-}
-
-function createOnlinePlaceholder(message) {
-    return {
-        status: 'idle',
-        message,
-        winner: null,
-        scores: { left: 0, right: 0 },
-        paddles: makePaddles(),
-        ball: makeBall(),
-        players: {
-            left: { connected: false },
-            right: { connected: false }
+        remoteInputY: centerPaddleY,
+        lastStateBroadcastAt: 0,
+        presence: {
+            left: false,
+            right: false
         }
     };
 }
@@ -231,7 +255,7 @@ function scoreLocal(side, now) {
 }
 
 function startLocalMatch() {
-    app.local = createLocalMatch('serving', 'Local match starting.');
+    app.local = createMatchState('serving', 'Local match starting.');
     resetPaddles(app.local);
     scheduleServe(app.local, Math.random() > 0.5 ? 1 : -1, 'Local match starting.', performance.now());
     hideOverlay();
@@ -272,45 +296,46 @@ function moveCpu(deltaSeconds) {
     app.local.paddles.right.y = clamp(app.local.paddles.right.y, 0, GAME.height - GAME.paddle.height);
 }
 
-function updateLocalBall(deltaSeconds, now) {
-    app.local.ball.x += app.local.ball.vx * deltaSeconds;
-    app.local.ball.y += app.local.ball.vy * deltaSeconds;
+function updateBallPhysics(state, onScore, now) {
+    state.ball.x += state.ball.vx * now.deltaSeconds;
+    state.ball.y += state.ball.vy * now.deltaSeconds;
 
-    if (app.local.ball.y - app.local.ball.radius <= 0) {
-        app.local.ball.y = app.local.ball.radius;
-        app.local.ball.vy = Math.abs(app.local.ball.vy);
-    } else if (app.local.ball.y + app.local.ball.radius >= GAME.height) {
-        app.local.ball.y = GAME.height - app.local.ball.radius;
-        app.local.ball.vy = -Math.abs(app.local.ball.vy);
+    if (state.ball.y - state.ball.radius <= 0) {
+        state.ball.y = state.ball.radius;
+        state.ball.vy = Math.abs(state.ball.vy);
+    } else if (state.ball.y + state.ball.radius >= GAME.height) {
+        state.ball.y = GAME.height - state.ball.radius;
+        state.ball.vy = -Math.abs(state.ball.vy);
     }
 
+    const leftX = 24;
     const hitsLeft =
-        app.local.ball.vx < 0 &&
-        app.local.ball.x - app.local.ball.radius <= 24 &&
-        app.local.ball.y + app.local.ball.radius >= app.local.paddles.left.y &&
-        app.local.ball.y - app.local.ball.radius <= app.local.paddles.left.y + GAME.paddle.height;
+        state.ball.vx < 0 &&
+        state.ball.x - state.ball.radius <= leftX &&
+        state.ball.y + state.ball.radius >= state.paddles.left.y &&
+        state.ball.y - state.ball.radius <= state.paddles.left.y + GAME.paddle.height;
 
     if (hitsLeft) {
-        app.local.ball.x = 24 + app.local.ball.radius;
-        bounceBall(app.local, 'left');
+        state.ball.x = leftX + state.ball.radius;
+        bounceBall(state, 'left');
     }
 
     const rightX = GAME.width - 24;
     const hitsRight =
-        app.local.ball.vx > 0 &&
-        app.local.ball.x + app.local.ball.radius >= rightX &&
-        app.local.ball.y + app.local.ball.radius >= app.local.paddles.right.y &&
-        app.local.ball.y - app.local.ball.radius <= app.local.paddles.right.y + GAME.paddle.height;
+        state.ball.vx > 0 &&
+        state.ball.x + state.ball.radius >= rightX &&
+        state.ball.y + state.ball.radius >= state.paddles.right.y &&
+        state.ball.y - state.ball.radius <= state.paddles.right.y + GAME.paddle.height;
 
     if (hitsRight) {
-        app.local.ball.x = rightX - app.local.ball.radius;
-        bounceBall(app.local, 'right');
+        state.ball.x = rightX - state.ball.radius;
+        bounceBall(state, 'right');
     }
 
-    if (app.local.ball.x + app.local.ball.radius < 0) {
-        scoreLocal('right', now);
-    } else if (app.local.ball.x - app.local.ball.radius > GAME.width) {
-        scoreLocal('left', now);
+    if (state.ball.x + state.ball.radius < 0) {
+        onScore('right');
+    } else if (state.ball.x - state.ball.radius > GAME.width) {
+        onScore('left');
     }
 }
 
@@ -327,8 +352,37 @@ function updateLocalMatch(deltaSeconds, now) {
     }
 
     if (app.local.status === 'playing') {
-        updateLocalBall(deltaSeconds, now);
+        updateBallPhysics(app.local, (side) => scoreLocal(side, now), { deltaSeconds });
     }
+}
+
+function cloneMatchState(state) {
+    return {
+        status: state.status,
+        message: state.message,
+        winner: state.winner,
+        scores: {
+            left: state.scores.left,
+            right: state.scores.right
+        },
+        paddles: {
+            left: { y: state.paddles.left.y },
+            right: { y: state.paddles.right.y }
+        },
+        ball: {
+            x: state.ball.x,
+            y: state.ball.y,
+            radius: state.ball.radius,
+            vx: state.ball.vx,
+            vy: state.ball.vy
+        },
+        serveDirection: state.serveDirection,
+        serveReadyAt: state.serveReadyAt,
+        players: {
+            left: { connected: state.players.left.connected },
+            right: { connected: state.players.right.connected }
+        }
+    };
 }
 
 function getCanvasY(clientY) {
@@ -347,11 +401,14 @@ function applyPointerControl(clientY) {
 
     if (app.mode === 'online' && app.online.connected) {
         app.online.inputY = nextY;
-        sendOnlineInput(true);
+
+        if (!app.online.isHost) {
+            broadcastOnlineInput();
+        }
     }
 }
 
-function updateOnlineInput(deltaSeconds, now) {
+function updateOnlineInput(deltaSeconds) {
     if (!app.online.connected) {
         return;
     }
@@ -371,54 +428,9 @@ function updateOnlineInput(deltaSeconds, now) {
         app.online.inputY = clamp(app.online.inputY, 0, GAME.height - GAME.paddle.height);
     }
 
-    const moved = app.online.lastSentY === null || Math.abs(app.online.inputY - app.online.lastSentY) > 1;
-    const heartbeat = now - app.online.lastSentAt > 1000;
-
-    if (moved || heartbeat) {
-        sendOnlineInput();
+    if (!app.online.isHost) {
+        broadcastOnlineInput();
     }
-}
-
-async function sendOnlineInput(force) {
-    if (!app.online.connected || app.online.sending || (!force && app.online.playerId === '')) {
-        return;
-    }
-
-    app.online.sending = true;
-    const payloadY = Math.round(app.online.inputY * 100) / 100;
-
-    try {
-        const response = await fetch(`/api/rooms/${app.online.roomCode}/input`, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json'
-            },
-            body: JSON.stringify({
-                playerId: app.online.playerId,
-                paddleY: payloadY
-            })
-        });
-
-        if (!response.ok) {
-            throw new Error('Input sync failed.');
-        }
-
-        app.online.lastSentY = payloadY;
-        app.online.lastSentAt = performance.now();
-    } catch (error) {
-        app.online.message = 'Connection problem while sending paddle movement.';
-        syncUi();
-    } finally {
-        app.online.sending = false;
-    }
-}
-
-function getRenderableState() {
-    if (app.mode === 'online') {
-        return app.online.snapshot || createOnlinePlaceholder(app.online.message);
-    }
-
-    return app.local;
 }
 
 function refreshPalette() {
@@ -468,6 +480,14 @@ function drawCircle(x, y, radius, color) {
     ctx.fill();
 }
 
+function getRenderableState() {
+    if (app.mode === 'online') {
+        return app.online.snapshot;
+    }
+
+    return app.local;
+}
+
 function render() {
     const state = getRenderableState();
 
@@ -511,6 +531,485 @@ function setTheme(themeId) {
     render();
 }
 
+function syncScoreLabels() {
+    if (app.mode === 'cpu') {
+        leftScoreLabel.textContent = 'YOU';
+        rightScoreLabel.textContent = 'CPU';
+        return;
+    }
+
+    if (app.online.side === 'right') {
+        leftScoreLabel.textContent = 'FRIEND';
+        rightScoreLabel.textContent = 'YOU';
+        return;
+    }
+
+    if (app.online.side === 'left') {
+        leftScoreLabel.textContent = 'YOU';
+        rightScoreLabel.textContent = 'FRIEND';
+        return;
+    }
+
+    leftScoreLabel.textContent = 'HOST';
+    rightScoreLabel.textContent = 'GUEST';
+}
+
+function syncUi() {
+    const state = getRenderableState();
+
+    syncScoreLabels();
+    leftScoreValue.textContent = state.scores.left;
+    rightScoreValue.textContent = state.scores.right;
+    gameStatus.textContent = app.mode === 'online' ? app.online.message : app.local.message;
+
+    roomCodeBadge.textContent = app.online.connected ? `Room: ${app.online.roomCode}` : 'Room: none';
+    roomRoleBadge.textContent = app.online.connected
+        ? `Role: ${app.online.side}`
+        : 'Role: offline';
+    shareHint.textContent = app.mode === 'online'
+        ? 'Share this page URL and the room code with your friend.'
+        : 'Local mode works by itself. Online mode uses hosted realtime.';
+
+    copyCodeButton.disabled = !app.online.connected;
+    leaveRoomButton.disabled = !app.online.connected;
+    createRoomButton.disabled = app.online.busy;
+    joinRoomButton.disabled = app.online.busy;
+    roomCodeInput.disabled = app.online.busy || app.online.connected;
+}
+
+function populateThemes() {
+    themePicker.innerHTML = THEMES.map((theme) => (
+        `<button class="theme-chip" data-theme="${theme.id}" type="button">
+            <span class="theme-chip-swatch" style="--swatch:${theme.swatch}"></span>
+            <span>${theme.label}</span>
+        </button>`
+    )).join('');
+}
+
+async function ensureRealtimeClient() {
+    if (app.online.configChecked) {
+        return app.online.configured;
+    }
+
+    app.online.configChecked = true;
+
+    try {
+        const response = await fetch('/api/realtime-config', { cache: 'no-store' });
+
+        if (!response.ok) {
+            throw new Error('Realtime config endpoint failed.');
+        }
+
+        const config = await response.json();
+
+        if (!config.supabaseUrl || !config.supabaseAnonKey) {
+            throw new Error('Online mode is not configured. Add SUPABASE_URL and SUPABASE_ANON_KEY.');
+        }
+
+        const { createClient } = await import(SUPABASE_MODULE_URL);
+        app.online.client = createClient(config.supabaseUrl, config.supabaseAnonKey);
+        app.online.configured = true;
+        app.online.configError = '';
+        app.online.message = 'Create a room or join one with a code.';
+        return true;
+    } catch (error) {
+        app.online.configured = false;
+        app.online.configError = error.message;
+        app.online.message = error.message;
+        return false;
+    }
+}
+
+function updatePresenceFromChannel() {
+    if (!app.online.channel) {
+        return;
+    }
+
+    const presenceState = app.online.channel.presenceState();
+    const presence = {
+        left: false,
+        right: false
+    };
+
+    Object.values(presenceState).forEach((entries) => {
+        entries.forEach((entry) => {
+            if (entry.side === 'left') {
+                presence.left = true;
+            }
+
+            if (entry.side === 'right') {
+                presence.right = true;
+            }
+        });
+    });
+
+    app.online.presence = presence;
+
+    if (!app.online.snapshot) {
+        app.online.snapshot = createMatchState('waiting', 'Waiting for players.');
+    }
+
+    app.online.snapshot.players = makePlayers(presence.left, presence.right);
+
+    if (app.online.isHost) {
+        if (presence.left && presence.right) {
+            if (!app.online.authoritative || app.online.authoritative.status === 'waiting') {
+                startHostedMatch();
+            }
+        } else if (app.online.authoritative) {
+            app.online.authoritative = createMatchState(
+                'waiting',
+                presence.left ? 'Waiting for your friend to join.' : 'Waiting for host.',
+                presence.left,
+                presence.right
+            );
+            app.online.snapshot = cloneMatchState(app.online.authoritative);
+            broadcastOnlineState(true);
+        }
+    } else if (!presence.left) {
+        app.online.snapshot = createMatchState('waiting', 'Waiting for host to connect.', presence.left, presence.right);
+    } else if (!presence.right) {
+        app.online.snapshot = createMatchState('waiting', 'Waiting for another player.', presence.left, presence.right);
+    }
+
+    syncOnlineOverlay();
+    syncUi();
+}
+
+function startHostedMatch() {
+    app.online.authoritative = createMatchState('serving', 'Match starting.', true, true);
+    resetPaddles(app.online.authoritative);
+    app.online.inputY = centerPaddleY;
+    app.online.remoteInputY = centerPaddleY;
+    scheduleServe(
+        app.online.authoritative,
+        Math.random() > 0.5 ? 1 : -1,
+        'Match starting.',
+        performance.now()
+    );
+    app.online.snapshot = cloneMatchState(app.online.authoritative);
+    app.online.message = app.online.snapshot.message;
+    broadcastOnlineState(true);
+}
+
+function finishHostedMatch(winner) {
+    app.online.authoritative.status = 'gameover';
+    app.online.authoritative.winner = winner;
+    centerBall(app.online.authoritative, winner === 'left' ? -1 : 1);
+    app.online.authoritative.message = winner === 'left'
+        ? 'Left player won the match.'
+        : 'Right player won the match.';
+}
+
+function scoreHosted(side, now) {
+    app.online.authoritative.scores[side] += 1;
+
+    if (app.online.authoritative.scores[side] >= GAME.winningScore) {
+        finishHostedMatch(side);
+        return;
+    }
+
+    const direction = side === 'left' ? 1 : -1;
+    const baseMessage = side === 'left' ? 'Left player scored.' : 'Right player scored.';
+    scheduleServe(app.online.authoritative, direction, `${baseMessage} Next serve in a moment.`, now);
+}
+
+function updateHostedMatch(deltaSeconds, now) {
+    if (!app.online.isHost || !app.online.authoritative) {
+        return;
+    }
+
+    app.online.authoritative.players = makePlayers(app.online.presence.left, app.online.presence.right);
+    app.online.authoritative.message = app.online.authoritative.message;
+    app.online.authoritative.paddles.left.y = clamp(app.online.inputY, 0, GAME.height - GAME.paddle.height);
+
+    const remoteDelta = app.online.remoteInputY - app.online.authoritative.paddles.right.y;
+    const remoteStep = GAME.paddle.speed * deltaSeconds;
+
+    if (Math.abs(remoteDelta) <= remoteStep) {
+        app.online.authoritative.paddles.right.y = app.online.remoteInputY;
+    } else {
+        app.online.authoritative.paddles.right.y += Math.sign(remoteDelta) * remoteStep;
+    }
+
+    if (app.online.authoritative.status === 'waiting' || !app.online.presence.left || !app.online.presence.right) {
+        app.online.snapshot = cloneMatchState(app.online.authoritative);
+        app.online.message = app.online.snapshot.message;
+        return;
+    }
+
+    if (app.online.authoritative.status === 'serving' && now >= app.online.authoritative.serveReadyAt) {
+        launchBall(app.online.authoritative);
+    }
+
+    if (app.online.authoritative.status === 'playing') {
+        updateBallPhysics(app.online.authoritative, (side) => scoreHosted(side, now), { deltaSeconds });
+    }
+
+    app.online.snapshot = cloneMatchState(app.online.authoritative);
+    app.online.message = app.online.snapshot.message;
+    broadcastOnlineState();
+}
+
+async function broadcastOnlineInput() {
+    if (!app.online.channel || app.online.isHost || !app.online.connected) {
+        return;
+    }
+
+    try {
+        await app.online.channel.send({
+            type: 'broadcast',
+            event: 'input',
+            payload: {
+                playerId: app.online.playerId,
+                paddleY: Math.round(app.online.inputY * 100) / 100
+            }
+        });
+    } catch (error) {
+        app.online.message = 'Unable to send paddle movement.';
+        syncUi();
+    }
+}
+
+async function broadcastOnlineState(force = false) {
+    if (!app.online.channel || !app.online.isHost || !app.online.authoritative) {
+        return;
+    }
+
+    const now = performance.now();
+
+    if (!force && now - app.online.lastStateBroadcastAt < ONLINE_BROADCAST_INTERVAL) {
+        return;
+    }
+
+    app.online.lastStateBroadcastAt = now;
+    app.online.snapshot = cloneMatchState(app.online.authoritative);
+    app.online.message = app.online.snapshot.message;
+
+    try {
+        await app.online.channel.send({
+            type: 'broadcast',
+            event: 'state',
+            payload: {
+                state: app.online.snapshot
+            }
+        });
+    } catch (error) {
+        app.online.message = 'Unable to broadcast room state.';
+        syncUi();
+    }
+}
+
+async function broadcastOnlineControl(action) {
+    if (!app.online.channel || !app.online.connected) {
+        return;
+    }
+
+    try {
+        await app.online.channel.send({
+            type: 'broadcast',
+            event: 'control',
+            payload: {
+                playerId: app.online.playerId,
+                action
+            }
+        });
+    } catch (error) {
+        app.online.message = 'Unable to send room action.';
+        syncUi();
+    }
+}
+
+async function leaveRealtimeRoom() {
+    if (app.online.channel) {
+        try {
+            await app.online.channel.untrack();
+        } catch (error) {
+            // Ignore cleanup errors here.
+        }
+
+        try {
+            await app.online.channel.unsubscribe();
+        } catch (error) {
+            // Ignore cleanup errors here too.
+        }
+
+        if (app.online.client) {
+            app.online.client.removeChannel(app.online.channel);
+        }
+    }
+
+    const client = app.online.client;
+    const configured = app.online.configured;
+    const configChecked = app.online.configChecked;
+    const configError = app.online.configError;
+
+    app.online = createOnlineState();
+    app.online.client = client;
+    app.online.configured = configured;
+    app.online.configChecked = configChecked;
+    app.online.configError = configError;
+    app.online.message = configured
+        ? 'Create a room or join one with a code.'
+        : (configError || 'Online mode is not configured.');
+}
+
+async function connectToRealtimeRoom(roomCode, side) {
+    const ready = await ensureRealtimeClient();
+
+    if (!ready) {
+        syncOnlineOverlay();
+        syncUi();
+        return;
+    }
+
+    app.online.busy = true;
+    syncUi();
+
+    try {
+        if (app.online.connected || app.online.channel) {
+            await leaveRealtimeRoom();
+        }
+
+        app.online.playerId = generateId();
+        app.online.roomCode = roomCode;
+        app.online.side = side;
+        app.online.isHost = side === 'left';
+        app.online.connected = false;
+        app.online.inputY = centerPaddleY;
+        app.online.remoteInputY = centerPaddleY;
+        app.online.snapshot = createMatchState('waiting', 'Connecting to room...');
+        app.online.message = 'Connecting to room...';
+
+        const channel = app.online.client.channel(`pong-room:${roomCode}`, {
+            config: {
+                presence: {
+                    key: app.online.playerId
+                }
+            }
+        });
+
+        app.online.channel = channel;
+
+        channel.on('presence', { event: 'sync' }, () => {
+            updatePresenceFromChannel();
+        });
+
+        channel.on('broadcast', { event: 'input' }, ({ payload }) => {
+            if (app.online.isHost && payload.playerId !== app.online.playerId) {
+                app.online.remoteInputY = clamp(payload.paddleY, 0, GAME.height - GAME.paddle.height);
+            }
+        });
+
+        channel.on('broadcast', { event: 'state' }, ({ payload }) => {
+            if (app.online.isHost) {
+                return;
+            }
+
+            app.online.snapshot = payload.state;
+            app.online.message = payload.state.message;
+            syncOnlineOverlay();
+            syncUi();
+        });
+
+        channel.on('broadcast', { event: 'control' }, ({ payload }) => {
+            if (!app.online.isHost) {
+                return;
+            }
+
+            if (payload.action === 'restart' && app.online.presence.left && app.online.presence.right) {
+                startHostedMatch();
+            }
+        });
+
+        await new Promise((resolve, reject) => {
+            const timeout = setTimeout(() => {
+                reject(new Error('Timed out connecting to realtime room.'));
+            }, 10000);
+
+            channel.subscribe(async (status) => {
+                if (status === 'SUBSCRIBED') {
+                    clearTimeout(timeout);
+
+                    try {
+                        await channel.track({
+                            playerId: app.online.playerId,
+                            side
+                        });
+                        app.online.connected = true;
+                        app.online.message = side === 'left'
+                            ? 'Room created. Waiting for your friend.'
+                            : 'Joined room. Waiting for host to start.';
+                        resolve();
+                    } catch (error) {
+                        reject(new Error('Failed to join room presence.'));
+                    }
+                } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT' || status === 'CLOSED') {
+                    clearTimeout(timeout);
+                    reject(new Error('Unable to connect to realtime room.'));
+                }
+            });
+        });
+
+        roomCodeInput.value = roomCode;
+        setMode('online');
+        updatePresenceFromChannel();
+        syncOnlineOverlay();
+    } catch (error) {
+        app.online.message = error.message;
+        await leaveRealtimeRoom();
+        syncOnlineOverlay();
+    } finally {
+        app.online.busy = false;
+        syncUi();
+    }
+}
+
+async function createRoom() {
+    if (app.online.busy) {
+        return;
+    }
+
+    await connectToRealtimeRoom(generateRoomCode(), 'left');
+}
+
+async function joinRoom() {
+    if (app.online.busy) {
+        return;
+    }
+
+    const code = roomCodeInput.value.trim().toUpperCase();
+
+    if (!code) {
+        app.online.message = 'Enter a room code first.';
+        syncUi();
+        return;
+    }
+
+    await connectToRealtimeRoom(code, 'right');
+}
+
+async function leaveRoom() {
+    await leaveRealtimeRoom();
+    syncOnlineOverlay();
+    syncUi();
+}
+
+async function copyRoomCode() {
+    if (!app.online.roomCode) {
+        return;
+    }
+
+    try {
+        await navigator.clipboard.writeText(app.online.roomCode);
+        app.online.message = `Copied room code ${app.online.roomCode}.`;
+    } catch (error) {
+        app.online.message = `Room code: ${app.online.roomCode}`;
+    }
+
+    syncUi();
+}
+
 function setMode(mode) {
     app.mode = mode;
     cpuModeButton.classList.toggle('is-active', mode === 'cpu');
@@ -552,35 +1051,35 @@ function setMode(mode) {
 }
 
 function syncOnlineOverlay() {
+    if (!app.online.configured && app.online.configChecked) {
+        setOverlay({
+            eyebrow: 'Online 1v1',
+            title: 'Realtime Needs Setup',
+            message: app.online.configError,
+            action: 'none',
+            label: ''
+        });
+        return;
+    }
+
     const snapshot = app.online.snapshot;
 
     if (!app.online.connected) {
         setOverlay({
             eyebrow: 'Online 1v1',
             title: 'Create or Join a Room',
-            message: 'Both players open the same app, then one creates a room and shares the code.',
+            message: 'Realtime rooms use Supabase. Create a room, share the code, and play live.',
             action: 'create-room',
             label: 'Create Room'
         });
         return;
     }
 
-    if (!snapshot) {
+    if (snapshot.status === 'waiting' || snapshot.status === 'idle') {
         setOverlay({
             eyebrow: `Room ${app.online.roomCode}`,
-            title: 'Connecting',
-            message: 'Setting up the room stream.',
-            action: 'copy-room-code',
-            label: 'Copy Code'
-        });
-        return;
-    }
-
-    if (snapshot.status === 'waiting') {
-        setOverlay({
-            eyebrow: `Room ${app.online.roomCode}`,
-            title: 'Waiting for Friend',
-            message: 'Share the room code and this page URL so your friend can join.',
+            title: 'Waiting for Players',
+            message: snapshot.message,
             action: 'copy-room-code',
             label: 'Copy Code'
         });
@@ -592,7 +1091,7 @@ function syncOnlineOverlay() {
         setOverlay({
             eyebrow: `Room ${app.online.roomCode}`,
             title,
-            message: 'Press rematch to start another first-to-five round.',
+            message: 'Start another first-to-five rally when you are ready.',
             action: 'restart-online',
             label: 'Rematch'
         });
@@ -600,255 +1099,6 @@ function syncOnlineOverlay() {
     }
 
     hideOverlay();
-}
-
-function syncScoreLabels() {
-    if (app.mode === 'cpu') {
-        leftScoreLabel.textContent = 'YOU';
-        rightScoreLabel.textContent = 'CPU';
-        return;
-    }
-
-    if (app.online.side === 'right') {
-        leftScoreLabel.textContent = 'FRIEND';
-        rightScoreLabel.textContent = 'YOU';
-        return;
-    }
-
-    if (app.online.side === 'left') {
-        leftScoreLabel.textContent = 'YOU';
-        rightScoreLabel.textContent = 'FRIEND';
-        return;
-    }
-
-    leftScoreLabel.textContent = 'HOST';
-    rightScoreLabel.textContent = 'GUEST';
-}
-
-function syncUi() {
-    const state = getRenderableState();
-
-    syncScoreLabels();
-    leftScoreValue.textContent = state.scores.left;
-    rightScoreValue.textContent = state.scores.right;
-    gameStatus.textContent = state.message || (app.mode === 'cpu' ? app.local.message : app.online.message);
-
-    roomCodeBadge.textContent = app.online.connected ? `Room: ${app.online.roomCode}` : 'Room: none';
-    roomRoleBadge.textContent = app.online.connected
-        ? `Role: ${app.online.side}`
-        : 'Role: offline';
-    shareHint.textContent = app.mode === 'online'
-        ? 'Share this page URL and the room code with your friend.'
-        : 'Local mode works by itself. Online mode needs the Node server running.';
-
-    copyCodeButton.disabled = !app.online.connected;
-    leaveRoomButton.disabled = !app.online.connected;
-    createRoomButton.disabled = app.online.busy || app.online.connected;
-    joinRoomButton.disabled = app.online.busy || app.online.connected;
-    roomCodeInput.disabled = app.online.busy || app.online.connected;
-}
-
-function populateThemes() {
-    themePicker.innerHTML = THEMES.map((theme) => (
-        `<button class="theme-chip" data-theme="${theme.id}" type="button">
-            <span class="theme-chip-swatch" style="--swatch:${theme.swatch}"></span>
-            <span>${theme.label}</span>
-        </button>`
-    )).join('');
-}
-
-async function postJson(url, payload) {
-    const response = await fetch(url, {
-        method: 'POST',
-        headers: {
-            'Content-Type': 'application/json'
-        },
-        body: JSON.stringify(payload)
-    });
-
-    if (!response.ok) {
-        let message = 'Request failed.';
-
-        try {
-            const errorPayload = await response.json();
-            message = errorPayload.error || message;
-        } catch (error) {
-            message = 'Request failed.';
-        }
-
-        throw new Error(message);
-    }
-
-    return response.json();
-}
-
-function attachRoomStream() {
-    if (app.online.eventSource) {
-        app.online.eventSource.close();
-    }
-
-    app.online.eventSource = new EventSource(
-        `/api/rooms/${app.online.roomCode}/events?playerId=${encodeURIComponent(app.online.playerId)}`
-    );
-
-    app.online.eventSource.onmessage = (event) => {
-        const snapshot = JSON.parse(event.data);
-        app.online.snapshot = snapshot;
-        app.online.message = snapshot.message || app.online.message;
-
-        const controlledPaddle = snapshot.paddles[app.online.side];
-
-        if (controlledPaddle && (app.online.lastSentY === null || Math.abs(app.online.inputY - controlledPaddle.y) > 160)) {
-            app.online.inputY = controlledPaddle.y;
-        }
-
-        controlsNote.textContent = app.online.side
-            ? `You control the ${app.online.side} paddle. Share this page URL and room code with your friend.`
-            : controlsNote.textContent;
-
-        syncOnlineOverlay();
-        syncUi();
-    };
-
-    app.online.eventSource.onerror = () => {
-        app.online.message = 'Trying to reconnect to the room...';
-        syncUi();
-    };
-}
-
-async function createRoom() {
-    if (app.online.connected || app.online.busy) {
-        return;
-    }
-
-    app.online.busy = true;
-    syncUi();
-
-    try {
-        const room = await postJson('/api/rooms/create', {});
-        app.online.connected = true;
-        app.online.roomCode = room.roomCode;
-        app.online.playerId = room.playerId;
-        app.online.side = room.side;
-        app.online.message = 'Room created. Waiting for your friend.';
-        app.online.snapshot = createOnlinePlaceholder(app.online.message);
-        app.online.inputY = centerPaddleY;
-        app.online.lastSentY = null;
-        roomCodeInput.value = room.roomCode;
-        attachRoomStream();
-        setMode('online');
-    } catch (error) {
-        app.online.message = error.message;
-        syncOnlineOverlay();
-    } finally {
-        app.online.busy = false;
-        syncUi();
-    }
-}
-
-async function joinRoom() {
-    if (app.online.connected || app.online.busy) {
-        return;
-    }
-
-    const code = roomCodeInput.value.trim().toUpperCase();
-
-    if (!code) {
-        app.online.message = 'Enter a room code first.';
-        syncUi();
-        return;
-    }
-
-    app.online.busy = true;
-    syncUi();
-
-    try {
-        const room = await postJson('/api/rooms/join', { code });
-        app.online.connected = true;
-        app.online.roomCode = room.roomCode;
-        app.online.playerId = room.playerId;
-        app.online.side = room.side;
-        app.online.message = 'Joined room. Match will start when both players are ready.';
-        app.online.snapshot = createOnlinePlaceholder(app.online.message);
-        app.online.inputY = centerPaddleY;
-        app.online.lastSentY = null;
-        roomCodeInput.value = room.roomCode;
-        attachRoomStream();
-        setMode('online');
-    } catch (error) {
-        app.online.message = error.message;
-        syncOnlineOverlay();
-    } finally {
-        app.online.busy = false;
-        syncUi();
-    }
-}
-
-async function sendRoomAction(action) {
-    if (!app.online.connected) {
-        return;
-    }
-
-    try {
-        await postJson(`/api/rooms/${app.online.roomCode}/action`, {
-            playerId: app.online.playerId,
-            action
-        });
-    } catch (error) {
-        app.online.message = error.message;
-        syncUi();
-    }
-}
-
-async function leaveRoom() {
-    if (!app.online.connected) {
-        return;
-    }
-
-    const payload = {
-        playerId: app.online.playerId
-    };
-
-    try {
-        await postJson(`/api/rooms/${app.online.roomCode}/leave`, payload);
-    } catch (error) {
-        app.online.message = error.message;
-    }
-
-    if (app.online.eventSource) {
-        app.online.eventSource.close();
-    }
-
-    app.online = createOnlineState();
-    syncOnlineOverlay();
-    syncUi();
-}
-
-function sendLeaveBeacon() {
-    if (!app.online.connected) {
-        return;
-    }
-
-    const payload = JSON.stringify({
-        playerId: app.online.playerId
-    });
-    const blob = new Blob([payload], { type: 'application/json' });
-    navigator.sendBeacon(`/api/rooms/${app.online.roomCode}/leave`, blob);
-}
-
-async function copyRoomCode() {
-    if (!app.online.roomCode) {
-        return;
-    }
-
-    try {
-        await navigator.clipboard.writeText(app.online.roomCode);
-        app.online.message = `Copied room code ${app.online.roomCode}.`;
-    } catch (error) {
-        app.online.message = `Room code: ${app.online.roomCode}`;
-    }
-
-    syncUi();
 }
 
 function handlePrimaryAction() {
@@ -864,7 +1114,11 @@ function handlePrimaryAction() {
             copyRoomCode();
             break;
         case 'restart-online':
-            sendRoomAction('restart');
+            if (app.online.isHost) {
+                startHostedMatch();
+            } else {
+                broadcastOnlineControl('restart');
+            }
             break;
         default:
             break;
@@ -882,7 +1136,8 @@ function frame(timestamp) {
     if (app.mode === 'cpu') {
         updateLocalMatch(deltaSeconds, timestamp);
     } else {
-        updateOnlineInput(deltaSeconds, timestamp);
+        updateOnlineInput(deltaSeconds);
+        updateHostedMatch(deltaSeconds, timestamp);
     }
 
     syncUi();
@@ -936,8 +1191,14 @@ cpuModeButton.addEventListener('click', async () => {
     setMode('cpu');
 });
 
-onlineModeButton.addEventListener('click', () => {
+onlineModeButton.addEventListener('click', async () => {
     setMode('online');
+
+    if (!app.online.configChecked) {
+        await ensureRealtimeClient();
+        syncOnlineOverlay();
+        syncUi();
+    }
 });
 
 startCpuButton.addEventListener('click', () => {
@@ -975,10 +1236,9 @@ roomCodeInput.addEventListener('keydown', (event) => {
 });
 
 window.addEventListener('beforeunload', () => {
-    sendLeaveBeacon();
-
-    if (app.online.eventSource) {
-        app.online.eventSource.close();
+    if (app.online.channel) {
+        app.online.channel.untrack();
+        app.online.channel.unsubscribe();
     }
 });
 
